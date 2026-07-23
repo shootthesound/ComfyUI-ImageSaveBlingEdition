@@ -1,0 +1,13 @@
+[project]
+name = "comfyui-imagesaveblingedition"
+description = "The save node ComfyUI deserved: a session gallery you can scrub through (recovered after reloads and restarts), PNG/JPEG/WebP, full metadata control with credit templates, filename/subfolder patterns, overwrite control, masks saved beside images, and a hold-for-review mode - all in a beautiful custom UI with zero standard widgets."
+version = "0.0.1"
+license = { text = "MIT" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/shootthesound/ComfyUI-ImageSaveBlingEdition"
+
+[tool.comfy]
+PublisherId = "shootthesound"
+DisplayName = "Image Save - Bling Edition"
