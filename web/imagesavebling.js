@@ -177,6 +177,7 @@ const CSS = `
 .bling-btn.danger { background:rgba(70,45,45,0.95); border-color:rgba(220,120,110,0.9);
   color:#ffd8d0; }
 .bling-btn.mini { padding:2px 7px; }
+.bling-btn.on { background:rgba(110,85,20,0.6); border-color:#d4af37; color:#ffd24a; }
 
 .bling-info { flex:0 0 auto; color:#7a9; font-size:9px; white-space:nowrap; }
 .bling-tag { position:absolute; top:2px; left:2px; font-size:9px; font-weight:bold;
@@ -340,6 +341,7 @@ function blingState(node) {
             tab: "output",
             els: {},
             clearArmed: false,
+            starFilter: false,
         };
     }
     return node._bling;
@@ -697,6 +699,16 @@ function row(labelText, ...children) {
 
 // ------------------------------------------------------------------ gallery rendering
 
+// Entry indexes the gallery currently browses: all of them, or only the
+// starred ones while the ★ filter is on. `sel` always indexes bling.entries.
+function visibleIdx(bling) {
+    const idx = [];
+    bling.entries.forEach((r, i) => {
+        if (!bling.starFilter || r.starred) idx.push(i);
+    });
+    return idx;
+}
+
 function renderGallery(node) {
     const bling = blingState(node);
     const E = bling.els;
@@ -704,7 +716,15 @@ function renderGallery(node) {
     const n = bling.entries.length;
     if (bling.sel >= n) bling.sel = n - 1;
     if (bling.sel < 0 && n > 0) bling.sel = n - 1;
-    const rec = bling.sel >= 0 ? bling.entries[bling.sel] : null;
+    const vis = visibleIdx(bling);
+    if (vis.length && !vis.includes(bling.sel)) {
+        // selection was filtered out (or just unstarred) — snap to the
+        // nearest visible entry before it, else the first visible
+        const before = vis.filter((i) => i < bling.sel);
+        bling.sel = before.length ? before[before.length - 1] : vis[0];
+    }
+    const rec = vis.length ? bling.entries[bling.sel] : null;
+    const pos = vis.indexOf(bling.sel);
 
     // A/B compare: while abShow is held, the pinned entry replaces the view
     const pinRec = bling.pinId ? bling.entries.find((r) => r.id === bling.pinId) : null;
@@ -715,12 +735,17 @@ function renderGallery(node) {
     // viewer
     E.mainImg.style.display = showRec ? "" : "none";
     E.empty.style.display = rec ? "none" : "";
+    E.empty.innerHTML = (n && bling.starFilter)
+        ? "No starred images.<br><span style='color:#555'>Star some (☆) or "
+          + "click ★ to show everything again.</span>"
+        : "Nothing saved yet this session.<br><span style='color:#555'>"
+          + "Every image that passes through appears here.</span>";
     E.badge.style.display = rec ? "" : "none";
     E.heldBadge.style.display = rec?.held ? "" : "none";
     E.heldRow.style.display = rec?.held ? "" : "none";
     E.nameBar.style.display = rec ? "" : "none";
-    E.navPrev.style.display = n > 1 ? "" : "none";
-    E.navNext.style.display = n > 1 ? "" : "none";
+    E.navPrev.style.display = vis.length > 1 ? "" : "none";
+    E.navNext.style.display = vis.length > 1 ? "" : "none";
     E.abBtn.style.display = comparing ? "" : "none";
     E.abBadge.style.display = comparing && bling.abShow ? "" : "none";
     E.abBadge.textContent = "A (pinned)";
@@ -728,7 +753,8 @@ function renderGallery(node) {
         const showMask = bling.showMask && showRec.mask && !bling.abShow;
         E.mainImg.src = showMask
             ? viewUrl(showRec.mask, showRec.ts) : viewUrl(showRec, showRec.ts);
-        E.badge.textContent = `${bling.sel + 1} / ${n}`;
+        E.badge.textContent = `${pos + 1} / ${vis.length}`
+            + (bling.starFilter ? " ★" : "");
         E.fname.textContent = (rec.subfolder ? rec.subfolder + "/" : "") + rec.filename
             + (showMask ? "  (mask)" : "");
         E.info.textContent = [
@@ -743,11 +769,17 @@ function renderGallery(node) {
         E.maskBtn.classList.toggle("on", !!showMask);
     }
 
-    // slider + count
-    E.slider.max = String(Math.max(0, n - 1));
-    E.slider.value = String(Math.max(0, bling.sel));
-    E.slider.disabled = n < 2;
-    E.count.textContent = n ? `${bling.sel + 1}/${n}` : "0/0";
+    // slider + count + star filter
+    E.slider.max = String(Math.max(0, vis.length - 1));
+    E.slider.value = String(Math.max(0, pos));
+    E.slider.disabled = vis.length < 2;
+    E.count.textContent = vis.length ? `${pos + 1}/${vis.length}` : "0/0";
+    const starredAll = bling.entries.filter((r) => r.starred).length;
+    E.filterBtn.style.display = (starredAll || bling.starFilter) ? "" : "none";
+    E.filterBtn.classList.toggle("on", !!bling.starFilter);
+    E.filterBtn.title = bling.starFilter
+        ? "Showing starred only — click to show everything"
+        : `Show only starred images (${starredAll})`;
 
     // bulk triage row
     const held = bling.entries.filter((r) => r.held);
@@ -755,7 +787,8 @@ function renderGallery(node) {
     E.bulk.style.display = held.length ? "" : "none";
     if (!E.saveAll._armed) E.saveAll.textContent = `💾 Save all (${held.length})`;
     if (!E.keepStar._armed) {
-        E.keepStar.textContent = `★ Keep starred (${starredHeld}/${held.length})`;
+        E.keepStar.textContent =
+            `★ Keep starred held images (${starredHeld}/${held.length})`;
     }
     E.keepStar.style.display = starredHeld ? "" : "none";
     if (!E.discardAll._armed) E.discardAll.textContent = "✕ Discard all";
@@ -764,9 +797,10 @@ function renderGallery(node) {
     E.clear.style.display = n ? "" : "none";
     if (!bling.clearArmed) { E.clear.textContent = "🗑"; E.clear.classList.remove("danger"); }
 
-    // filmstrip
+    // filmstrip (only the visible subset while the ★ filter is on)
     E.strip.innerHTML = "";
-    bling.entries.forEach((r, i) => {
+    for (const i of vis) {
+        const r = bling.entries[i];
         const t = el("div", "bling-thumb" + (i === bling.sel ? " sel" : "") + (r.held ? " held" : ""));
         const img = el("img");
         img.loading = "lazy";
@@ -780,9 +814,9 @@ function renderGallery(node) {
             + (r.held ? "\n(held — not saved yet)" : "");
         t.addEventListener("click", () => { bling.sel = i; bling.showMask = false; renderGallery(node); });
         E.strip.appendChild(t);
-    });
-    if (bling.sel >= 0) {
-        const selEl = E.strip.children[bling.sel];
+    }
+    if (pos >= 0) {
+        const selEl = E.strip.children[pos];
         selEl?.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
 
@@ -1378,7 +1412,9 @@ function renderLightbox(node) {
         rec.model || "",
         rec.held ? "HELD — not saved" : "",
     ].filter(Boolean).join(" · ");
-    L.idx.textContent = `${bling.sel + 1} / ${bling.entries.length}`;
+    const vis = visibleIdx(bling);
+    L.idx.textContent = `${vis.indexOf(bling.sel) + 1} / ${vis.length}`
+        + (bling.starFilter ? " ★" : "");
     L.star.textContent = rec.starred ? "★" : "☆";
     L.star.classList.toggle("on", !!rec.starred);
     L.mask.style.display = rec.mask ? "" : "none";
@@ -1459,9 +1495,7 @@ function buildUI(node) {
     // ---- viewer
     E.viewer = el("div", "bling-viewer");
     E.mainImg = el("img");
-    E.empty = el("div", "bling-empty");
-    E.empty.innerHTML = "Nothing saved yet this session.<br>"
-        + "<span style='color:#555'>Every image that passes through appears here.</span>";
+    E.empty = el("div", "bling-empty"); // text set per-render (differs under ★ filter)
     E.badge = el("div", "bling-badge");
     E.heldBadge = el("div", "bling-heldbadge", "HELD — not saved");
     E.navPrev = el("div", "bling-nav prev", "‹");
@@ -1487,8 +1521,9 @@ function buildUI(node) {
     E.fname = el("div", "bling-fname");
     E.info = el("div", "bling-info");
     E.starBtn = el("div", "bling-ico", "☆");
-    E.starBtn.title = "Star this image (S in fullscreen) — “Keep starred” "
-        + "saves starred holds and discards the rest";
+    E.starBtn.title = "Star this image (S in fullscreen) — the ★ filter shows "
+        + "starred only, and “Keep starred held images” saves starred holds "
+        + "and discards the held rest";
     E.starBtn.addEventListener("click", () => {
         const rec = bling.entries[bling.sel];
         if (rec) setStar(node, rec, !rec.starred);
@@ -1555,11 +1590,19 @@ function buildUI(node) {
     E.slider.type = "range";
     E.slider.min = "0"; E.slider.max = "0"; E.slider.value = "0";
     E.slider.addEventListener("input", () => {
-        bling.sel = parseInt(E.slider.value, 10) || 0;
+        const vis = visibleIdx(bling);
+        const v = vis[parseInt(E.slider.value, 10) || 0];
+        if (v != null) bling.sel = v;
         bling.showMask = false;
         renderGallery(node);
     });
     E.count = el("div", "bling-count", "0/0");
+    E.filterBtn = el("div", "bling-btn mini", "★");
+    E.filterBtn.title = "Show only starred images";
+    E.filterBtn.addEventListener("click", () => {
+        bling.starFilter = !bling.starFilter;
+        renderGallery(node);
+    });
     E.clear = el("div", "bling-btn mini", "🗑");
     E.clear.title = "Clear session history (saved files stay on disk; held images are discarded)";
     E.clear.addEventListener("click", () => {
@@ -1579,6 +1622,7 @@ function buildUI(node) {
     });
     ctl.appendChild(E.slider);
     ctl.appendChild(E.count);
+    ctl.appendChild(E.filterBtn);
     ctl.appendChild(E.clear);
     root.appendChild(ctl);
 
@@ -1589,7 +1633,7 @@ function buildUI(node) {
     E.saveAll.addEventListener("click", () => commitHeld(node, []));
     E.keepStar = el("div", "bling-btn save mini", "★ Keep starred");
     E.keepStar.title = "Save every starred held image, discard the held rest";
-    armable(E.keepStar, "Keep ★, drop rest?", () => keepStarred(node));
+    armable(E.keepStar, "Keep ★ held, drop rest?", () => keepStarred(node));
     E.discardAll = el("div", "bling-btn mini", "✕ Discard all");
     E.discardAll.title = "Discard every held image";
     armable(E.discardAll, "Discard all held?", () => discardMany(node, [], true));
@@ -1648,9 +1692,11 @@ function buildUI(node) {
 
 function step(node, d) {
     const bling = blingState(node);
-    const n = bling.entries.length;
-    if (!n) return;
-    bling.sel = ((bling.sel + d) % n + n) % n;
+    const vis = visibleIdx(bling);
+    if (!vis.length) return;
+    const pos = vis.indexOf(bling.sel);
+    const next = pos < 0 ? 0 : ((pos + d) % vis.length + vis.length) % vis.length;
+    bling.sel = vis[next];
     bling.showMask = false;
     if (bling.lb?.open) bling.lb.scale = null; // re-fit the lightbox per image
     renderGallery(node);

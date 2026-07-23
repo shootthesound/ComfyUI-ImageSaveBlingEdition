@@ -6,24 +6,7 @@
 
 ## What it does in one screen
 
-```
-                          ┌────────────────────────────────────┐
-   IMAGE ───────────────► │     Image Save - Bling Edition     │
-                          │  ┌──────────────────────────────┐  │
-   MASK (optional) ─────► │  │  1/47                 [HELD] │  │
-                          │  │ ‹        viewer            › │  │  ← click = fullscreen
-                          │  │      [💾 Save this one]      │  │
-                          │  │ name · seed ☆ A ⟲wf mask ↗ ⛶ │  │  ← per-image actions
-                          │  ├──────────────────────────────┤  │
-                          │  │ ───────●──────────  12/47  🗑 │  │  ← scrub slider
-                          │  │ [💾 Save all][★ Keep][✕ all] │  │  ← triage row (holds)
-                          │  │ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ ▦ │  │  ← filmstrip
-                          │  ├──────────────────────────────┤  │
-                          │  │ Output│Naming│Meta│Mask│     │  │
-                          │  │       W-mark│Presets         │  │  ← settings tabs
-                          │  └──────────────────────────────┘  │
-                          └────────────────────────────────────┘
-```
+<img src="screenshots/node-full.png" alt="The full node: viewer with a held image, scrub slider, triage row, filmstrip and settings tabs" width="540">
 
 That's the whole output side of your workflow. No preview node, no separate save node, no digging through the output folder to find "the good one from an hour ago" — it's in the filmstrip, with its seed, and its workflow is one click away.
 
@@ -38,14 +21,27 @@ The standard flow is: `Preview Image` to look, `Save Image` to keep, and a growi
 - **Fullscreen review**: click the image for a lightbox — scroll zooms around the cursor, drag pans, double-click flips fit ↔ 1:1 pixels. Arrows walk the gallery without leaving it.
 - **A/B compare**: pin any image as **A**, then hold the `A⇄B` button (or `C` in fullscreen) on any other image to flip between them. The fastest honest way to judge two seeds.
 - **"What made this?"** — every entry shows its **seed and model**, and the **⟲ wf** button loads the exact workflow that produced it straight into the canvas (two-click confirm — it replaces the current graph, that's the point).
-- **📥 Save to inputs** — copy any gallery image into ComfyUI's `input/` folder under a name you type, ready for a Load Image node. Generate → review → feed the keeper straight back into your next workflow.
+- **📥 Save to inputs** — copy any gallery image into ComfyUI's `input/` folder under a name you type, ready for a Load Image node (Load Image lists refresh automatically). Generate → review → feed the keeper straight back into your next workflow.
+- **★ filter** — stars aren't just for triage: star anything, held or saved, and toggle the **★** button beside the slider to scrub only your starred images. Stars live in the manifest, so your bookmarks survive reloads and restarts.
+
+Every image carries its own action bar — name, seed, model, star, A/B pin, workflow restore, mask toggle, save-to-inputs, open full size, fullscreen:
+
+<img src="screenshots/actions-bar.png" alt="Per-image action bar: filename, seed, model, star, pin, workflow restore, mask, save to inputs, open, fullscreen" width="760">
 
 **Triage — Hold-for-review (the killer feature)**
 
 - Flip Output mode to **Hold for review** and images park in temp storage instead of your output folder.
-- Generate a batch, flip through fullscreen, tap **S** to star the keepers, then hit **★ Keep starred** — starred images save through your naming/format/metadata rules, the rest are discarded. One click, clean output folder.
+- Generate a batch, flip through fullscreen, tap **S** to star the keepers, then hit **★ Keep starred held images** — starred images save through your naming/format/metadata rules, the rest are discarded. One click, clean output folder.
 - Or go one at a time (**Save this one** / **Discard**), or **💾 Save all**, or **✕ Discard all**. Destructive buttons arm on first click and fire on the second.
 - Stars survive reloads (they live in the manifest), and a held image keeps its star when saved.
+
+Held images wear their state on the viewer — the amber badge and per-image save/discard:
+
+<img src="screenshots/viewer-held.png" alt="Viewer showing a held image: HELD badge, Save this one and Discard buttons" width="540">
+
+The bulk triage row appears whenever holds exist — starred thumbnails show a ★, held ones an amber dot:
+
+<img src="screenshots/triage-row.png" alt="Triage row: Save all, Keep starred held images, Discard all, above the filmstrip" width="760">
 
 **Save — formats, names, metadata**
 
@@ -79,7 +75,7 @@ If mediapipe is missing for any reason, everything except the automatic mask sti
 
 1. Add **Image Save - Bling Edition** (category: *image*) and wire an IMAGE into it. Queue — the image appears in the gallery and saves with your current settings.
 2. Click the image for **fullscreen review**. Scroll to zoom, arrows to flip through.
-3. **Output tab** → switch mode to **Hold for review**. Queue a few generations, star the keepers with `S`, hit **★ Keep starred**.
+3. **Output tab** → switch mode to **Hold for review**. Queue a few generations, star the keepers with `S`, hit **★ Keep starred held images**.
 4. **Naming tab** → click token chips into the filename box and watch the live example line build your path.
 5. **Meta tab** → set your credit fields once, **Save** them as a template, hit **★ Auto** so every future node carries them.
 6. **W-mark tab** → upload your logo PNG, set scale/position/inset, done — every save is branded.
@@ -87,14 +83,43 @@ If mediapipe is missing for any reason, everything except the automatic mask sti
 
 ## The tabs
 
-| Tab | Controls |
-|---|---|
-| Output | Auto-save / Hold for review · PNG / JPEG / WebP · quality · lossless WebP |
-| Naming | filename pattern + token chips · prefix · counter digits · overwrite · subfolder on/off + pattern · live example |
-| Meta | embed workflow · embed prompt · sidecar .json · custom fields · credit templates + ★ Auto |
-| Mask | on/off · MASK input / person parts · confidence · refine · invert · suffix |
-| W-mark | on/off · PNG upload · scale (% of image width) · inset px · 3×3 position · opacity |
-| Presets | apply / save / delete Node Presets — all tabs, per-group include toggles |
+Click a tab to expand it:
+
+<details open>
+<summary><b>Output</b> — Auto-save / Hold for review · PNG / JPEG / WebP · quality · lossless WebP</summary>
+<br>
+<img src="screenshots/tab-output.png" alt="Output tab: mode and format" width="760">
+</details>
+
+<details>
+<summary><b>Naming</b> — filename pattern + token chips · prefix · counter digits · overwrite · subfolder on/off + pattern · live example</summary>
+<br>
+<img src="screenshots/tab-naming.png" alt="Naming tab: filename pattern, token chips, prefix, counter digits, overwrite, subfolder" width="760">
+</details>
+
+<details>
+<summary><b>Meta</b> — embed workflow · embed prompt · sidecar .json · custom fields · credit templates + ★ Auto</summary>
+<br>
+<img src="screenshots/tab-meta.png" alt="Meta tab: workflow/prompt embedding, sidecar json, custom fields, credit templates" width="760">
+</details>
+
+<details>
+<summary><b>Mask</b> — on/off · MASK input / person parts · confidence · refine · invert · suffix</summary>
+<br>
+<img src="screenshots/tab-mask.png" alt="Mask tab: source, person parts, confidence, refine, suffix, invert" width="760">
+</details>
+
+<details>
+<summary><b>W-mark</b> — on/off · PNG upload · scale (% of image width) · inset px · 3×3 position · opacity</summary>
+<br>
+<img src="screenshots/tab-wmark.png" alt="W-mark tab: watermark PNG, scale, inset, 3x3 position grid" width="760">
+</details>
+
+<details>
+<summary><b>Presets</b> — apply / save / delete Node Presets — all tabs, per-group include toggles</summary>
+<br>
+<img src="screenshots/tab-presets.png" alt="Presets tab: apply a preset, per-group include toggles, save as" width="760">
+</details>
 
 ## Keyboard shortcuts (fullscreen review)
 
@@ -111,7 +136,7 @@ If mediapipe is missing for any reason, everything except the automatic mask sti
 
 ## Tips
 
-- **Hold mode + `S` + ★ Keep starred is the workflow.** Queue a batch, review fullscreen, star, one button. Your output folder only ever contains images you chose.
+- **Hold mode + `S` + ★ Keep starred held images is the workflow.** Queue a batch, review fullscreen, star, one button. Your output folder only ever contains images you chose.
 - **Use `%counter%` unless you truly want overwrite.** With overwrite on and a fixed name, earlier gallery entries point at the same file — they'll all show the newest pixels.
 - **Clean JPEGs that still restore**: strip the embedded workflow, enable **Sidecar .json**. Deliverable files stay metadata-free; you keep the recovery path.
 - **The ⟲ wf button is your time machine.** Any gallery entry with a recoverable workflow (embedded or sidecar) can put the canvas back to the settings that made it.
