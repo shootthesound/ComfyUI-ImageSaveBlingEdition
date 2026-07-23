@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-imagesaveblingedition"
-description = "The save node ComfyUI deserved: a session gallery you can scrub through (recovered after reloads and restarts), PNG/JPEG/WebP, full metadata control with credit templates, filename/subfolder patterns, overwrite control, masks saved beside images, and a hold-for-review mode - all in a beautiful custom UI with zero standard widgets."
+description = "The save node for ComfyUI reimagined. A session gallery on the node that survives restarts, hold-for-review triage that keeps your output folder clean, and one-click workflow recovery from any image - plus formats, metadata, credits, auto mask sidecar images (mediapipe), watermarks, a save-to-comfy-inputs button and more, all remembered between sessions."
 version = "0.0.1"
 license = { text = "MIT" }
 dependencies = []
