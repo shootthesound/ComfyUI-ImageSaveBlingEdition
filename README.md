@@ -18,7 +18,7 @@ The standard flow is: `Preview Image` to look, `Save Image` to keep, and a growi
 
 - Every executed image lands in the **filmstrip + viewer** on the node. Scrub the slider, click thumbnails, flip with the arrows.
 - **Session recovery**: the gallery is rebuilt after a page reload *and* after a ComfyUI restart. Each node keeps a history manifest on the server, tied to the workflow it lives in — reopen the workflow tomorrow and the gallery is still there.
-- **Fullscreen review**: click the image for a lightbox — scroll zooms around the cursor, drag pans, double-click flips fit ↔ 1:1 pixels. Arrows walk the gallery without leaving it.
+- **Fullscreen review**: click the image for a lightbox — scroll zooms around the cursor, drag pans, double-click flips fit ↔ 1:1 pixels. Arrows walk the gallery without leaving it. Whichever of fit or 1:1 you last double-clicked to sticks — across images, across reopening the lightbox, even across a ComfyUI restart — until you double-click again.
 - **A/B compare**: pin any image as **A**, then hold the `A⇄B` button (or `C` in fullscreen) on any other image to flip between them. The fastest honest way to judge two seeds.
 - **"What made this?"** — every entry shows its **seed and model**, and the **⟲ wf** button loads the exact workflow that produced it straight into the canvas (two-click confirm — it replaces the current graph, that's the point).
 - **📥 Save to inputs** — copy any gallery image into ComfyUI's `input/` folder under a name you type, ready for a Load Image node (Load Image lists refresh automatically). Generate → review → feed the keeper straight back into your next workflow.
@@ -32,8 +32,9 @@ Every image carries its own action bar — name, seed, model, star, A/B pin, wor
 
 - Flip Output mode to **Hold for review** and images park in temp storage instead of your output folder.
 - Generate a batch, flip through fullscreen, tap **S** to star the keepers, then hit **★ Keep starred held images** — starred images save through your naming/format/metadata rules, the rest are discarded. One click, clean output folder.
-- Or go one at a time (**Save this one** / **Discard**), or **💾 Save all**, or **✕ Discard all**. Destructive buttons arm on first click and fire on the second.
+- Or go one at a time (**Save this one** / **Discard**), or **💾 Save all**, or **✕ Discard all**. Destructive buttons arm on first click and fire on the second. Save buttons spin and disable themselves while the write is in flight, so an impatient second click can't fire it twice.
 - Stars survive reloads (they live in the manifest), and a held image keeps its star when saved.
+- **Everything is decided at save time, not generation time.** Format, naming, metadata, mask, watermark, save root — whatever the panel shows *when you click Save* is what gets used, even if you change settings after generating. Hold a batch, tweak the naming pattern or flip on a watermark, then commit — it applies to every held image you save from that point on, regardless of what was set when they were generated.
 
 Held images wear their state on the viewer — the amber badge and per-image save/discard:
 
@@ -46,6 +47,7 @@ The bulk triage row appears whenever holds exist — starred thumbnails show a �
 **Save — formats, names, metadata**
 
 - **PNG / JPEG / WebP** with a quality slider and lossless WebP. JPEG/WebP embed the workflow in EXIF using the same convention core ComfyUI uses, so **drag-to-restore keeps working outside PNG**.
+- **Save root**: point the node at any folder on disk instead of ComfyUI's `output` — leave it blank and nothing changes. Click **Browse…** for a folder picker built into the node; it walks the ComfyUI server's own filesystem rather than opening a real OS dialog (browsers won't hand a page an absolute path, native or otherwise), but it gets you the same click-through-folders experience. Naming, subfolders, and everything else in this list work exactly the same underneath whichever root is set.
 - **Token filenames and subfolders**: `%counter%`, `%date%` (custom formats like `%date:yyyy-MM-dd%`), `%time%`, `%seed%`, `%model%`, `%prefix%`, `%width%`, `%height%`, `%index%` — chips insert at your cursor in whichever box you're editing, and a live example shows the exact path you'll get. Subfolders toggle on/off; **overwrite** replaces same-named files instead of counting up.
 - **Metadata control**: embed or strip workflow and prompt independently, write a **sidecar `.json`** for clean files that are still recoverable, and add **custom fields** (Author, Copyright, anything — they land in the proper EXIF tags). Save field sets as **credit templates**; star one as **Auto** and every new node preloads it.
 - **Mask beside the image**: pipe a MASK in, or generate an automatic **person mask** (face / hair / body / clothes / background — mediapipe). The viewer's *mask* button flips between image and mask.
@@ -86,7 +88,7 @@ If mediapipe is missing for any reason, everything except the automatic mask sti
 Click a tab to expand it:
 
 <details open>
-<summary><b>Output</b> — Auto-save / Hold for review · PNG / JPEG / WebP · quality · lossless WebP</summary>
+<summary><b>Output</b> — Auto-save / Hold for review · PNG / JPEG / WebP · quality · lossless WebP · save root + folder Browse…</summary>
 <br>
 <img src="screenshots/tab-output.png" alt="Output tab: mode and format" width="760">
 </details>
@@ -142,6 +144,7 @@ Click a tab to expand it:
 - **The ⟲ wf button is your time machine.** Any gallery entry with a recoverable workflow (embedded or sidecar) can put the canvas back to the settings that made it.
 - **Watermark decisions can come last.** In hold mode the watermark applies at save time, so you can toggle or reposition it after seeing the images.
 - **Preset the groups you mean.** Excluding Naming from a preset means applying it never touches your filename scheme — presets compose.
+- **A save root folder doesn't need to exist yet.** Browse to the closest existing parent and type the rest of the path onto the end (e.g. browse to `…/Renders` then add `/ClientX`) — it's created on first save, same as subfolders always have been.
 
 ## Honest limits
 
@@ -152,6 +155,8 @@ Click a tab to expand it:
 - History manifests, templates and presets are stored under the `default` ComfyUI user — multi-user servers share them.
 - ComfyUI's own queue-history thumbnails won't show this node's outputs — the node deliberately skips the standard preview payload so nothing double-renders under the panel. The gallery is the preview.
 - Loading a workflow from a gallery entry **replaces the current canvas** (that's the point) — hence the two-click confirm.
+- **The save root folder picker isn't a real OS dialog.** No browser will hand a page an absolute filesystem path — that's the sandbox doing its job — so Browse… walks the ComfyUI server's own disk over a small endpoint instead. It's the same machine the node actually saves to, so it gets you to the right folder either way.
+- **Images saved under a custom root skip ComfyUI's own output browser** and its `/view` route (that route only knows ComfyUI's own input/output/temp folders) — this node serves those previews itself instead. Nothing else about the save changes.
 
 ## Compatibility
 

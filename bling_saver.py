@@ -40,6 +40,7 @@ DEFAULTS = {
     "use_subfolder": False,
     "subfolder": "%date%",
     "overwrite": False,
+    "save_root": "",           # absolute folder override; "" = ComfyUI's output dir
     "meta_workflow": True,
     "meta_prompt": True,
     "meta_extra": [],          # [{"key": ..., "value": ...}]
@@ -164,8 +165,17 @@ def clean_subfolder(sub):
 
 
 def resolve_dir(cfg, ctx):
-    """(absolute dir, subfolder-for-/view). Always inside the output dir."""
-    out_root = folder_paths.get_output_directory()
+    """(absolute dir, subfolder-for-/view, custom root-or-None).
+
+    Normally everything lives inside ComfyUI's own output dir. If `save_root`
+    is set, that absolute path is the root instead — the subfolder pattern is
+    still confined to it (no escaping via ../), same as the default case is
+    confined to the output dir. The third return value is the custom root
+    when one is in effect, so callers can stamp records with it (files
+    outside ComfyUI's own directories aren't reachable through its /view
+    route, so the record needs to say where to actually find them)."""
+    custom_root = (cfg.get("save_root") or "").strip()
+    out_root = os.path.abspath(custom_root if custom_root else folder_paths.get_output_directory())
     sub = ""
     if cfg.get("use_subfolder"):
         # %counter% is per-file and only meaningful in the filename
@@ -173,10 +183,10 @@ def resolve_dir(cfg, ctx):
         sub = clean_subfolder(expand(pattern, ctx))
     full = os.path.join(out_root, *sub.split("/")) if sub else out_root
     full = os.path.abspath(full)
-    if os.path.commonpath([full, os.path.abspath(out_root)]) != os.path.abspath(out_root):
-        full, sub = os.path.abspath(out_root), ""
+    if os.path.commonpath([full, out_root]) != out_root:
+        full, sub = out_root, ""
     os.makedirs(full, exist_ok=True)
-    return full, sub
+    return full, sub, (out_root if custom_root else None)
 
 
 def _next_counter(dirpath, stem_pattern):
@@ -271,7 +281,7 @@ def mask_to_pil(mask_tensor, invert=False):
 # ---------------------------------------------------------------- saving
 
 def _new_record(filename, subfolder, ftype, fmt, held, mask_ref, cfg=None,
-                seed=None, model=None, wf=False):
+                seed=None, model=None, wf=False, root=None):
     rec = {
         "id": uuidlib.uuid4().hex[:12],
         "ts": time.time(),
@@ -286,6 +296,10 @@ def _new_record(filename, subfolder, ftype, fmt, held, mask_ref, cfg=None,
         "starred": False,
         "wf": bool(wf),
     }
+    if root:
+        # Only stamped when a custom save_root is in effect — its absence
+        # means "the normal ComfyUI directory for `type`", same as before.
+        rec["root"] = root
     if cfg is not None:
         rec["cfg"] = cfg
     return rec
@@ -332,7 +346,7 @@ def save_single(pil_img, cfg, prompt, workflow, ctx, mask_pil=None):
     fmt = cfg.get("format", "png")
     if fmt not in _EXT:
         fmt = "png"
-    dirpath, sub = resolve_dir(cfg, ctx)
+    dirpath, sub, root = resolve_dir(cfg, ctx)
     stem = resolve_stem(cfg, ctx, dirpath)
     fname = stem + _EXT[fmt]
     fpath = os.path.join(dirpath, fname)
@@ -362,18 +376,23 @@ def save_single(pil_img, cfg, prompt, workflow, ctx, mask_pil=None):
         mask_name = stem + suffix + ".png"
         mask_pil.save(os.path.join(dirpath, mask_name), compress_level=4)
         mask_ref = {"filename": mask_name, "subfolder": sub, "type": "output"}
+        if root:
+            mask_ref["root"] = root
 
     seed = ctx.get("seed")
     wf_available = (workflow is not None and not metadata_disabled()
                     and (cfg.get("meta_workflow") or cfg.get("sidecar_json")))
     return _new_record(fname, sub, "output", fmt, False, mask_ref,
                        seed=None if seed == "" else seed,
-                       model=ctx.get("model") or None, wf=wf_available)
+                       model=ctx.get("model") or None, wf=wf_available, root=root)
 
 
 def save_held(pil_img, cfg, prompt, workflow, mask_pil=None):
-    """Park one image in the temp dir with full metadata embedded; the cfg
-    snapshot rides along in the record so commit can apply it later."""
+    """Park one image in the temp dir with full metadata embedded. The cfg
+    active at generation time still rides along in the record as a
+    fallback (an older frontend, or a record held before this existed),
+    but commit_held() prefers whatever the panel's live settings are at
+    commit time over this snapshot."""
     dirpath = os.path.join(folder_paths.get_temp_directory(), HELD_SUBFOLDER)
     os.makedirs(dirpath, exist_ok=True)
     hid = uuidlib.uuid4().hex[:12]
@@ -396,19 +415,31 @@ def save_held(pil_img, cfg, prompt, workflow, mask_pil=None):
 
 
 def record_path(rec):
-    t = rec.get("type", "output")
-    root = {"temp": folder_paths.get_temp_directory(),
-            "input": folder_paths.get_input_directory()}.get(
-        t, folder_paths.get_output_directory())
+    # A "root" on the record means it was saved under a custom save_root
+    # rather than one of ComfyUI's own directories.
+    root = rec.get("root")
+    if not root:
+        t = rec.get("type", "output")
+        root = {"temp": folder_paths.get_temp_directory(),
+                "input": folder_paths.get_input_directory()}.get(
+            t, folder_paths.get_output_directory())
     sub = rec.get("subfolder", "") or ""
     return os.path.join(root, *[p for p in sub.split("/") if p], rec["filename"])
 
 
-def commit_held(rec):
-    """Re-encode a held temp PNG into the output dir using its cfg snapshot.
-    Returns the replacement record. Temp files are removed on success."""
+def commit_held(rec, live_cfg=None):
+    """Re-encode a held temp PNG into the output dir. Returns the
+    replacement record. Temp files are removed on success.
+
+    Uses `live_cfg` — the node's current panel settings, sent fresh by the
+    frontend on every commit — when given, so format/naming/metadata/mask/
+    watermark/save_root are all decided at commit time, not frozen back
+    when the image was generated (that's the whole point of holding: you
+    review, maybe adjust settings, then decide). Falls back to the cfg
+    snapshot recorded at hold time (`rec["cfg"]`) only if no live config was
+    sent — e.g. an older frontend, or a held record from before this."""
     cfg = dict(DEFAULTS)
-    cfg.update(rec.get("cfg", {}) or {})
+    cfg.update((live_cfg if live_cfg is not None else rec.get("cfg", {})) or {})
     src = record_path(rec)
     img = Image.open(src)
     img.load()

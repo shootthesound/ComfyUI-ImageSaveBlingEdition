@@ -6,9 +6,11 @@ and ComfyUI restarts. Held (temp) records whose files vanished — e.g. the
 temp dir was cleared by a restart — are pruned on load.
 """
 
+import io
 import json
 import os
 import re
+import string
 import threading
 
 import folder_paths
@@ -189,13 +191,108 @@ def save_last(cfg):
         print(f"[ImageSaveBling] last-config write failed: {e}")
 
 
+# ---------------------------------------------------------------- save-root browsing
+#
+# The Output tab's "Save root" folder picker walks the server's own
+# filesystem rather than opening a real OS dialog — browsers deliberately
+# don't hand a page an absolute filesystem path (that's the whole point of
+# the sandbox), so there's no way for a web UI to tell the Python backend
+# "this folder" short of the user typing it. Since ComfyUI's server and this
+# node's save code run on the same machine, walking that filesystem over a
+# small HTTP endpoint is the closest practical stand-in for a native picker.
+
+def _list_drives():
+    if os.name != "nt":
+        return []
+    return [f"{d}:\\" for d in string.ascii_uppercase if os.path.exists(f"{d}:\\")]
+
+
+def _dir_entries(path):
+    """Sorted subfolder names of `path`, or None if it can't be listed."""
+    try:
+        with os.scandir(path) as it:
+            names = [e.name for e in it if not e.name.startswith(".")
+                     and _safe_isdir(e)]
+    except OSError:
+        return None
+    names.sort(key=str.lower)
+    return names
+
+
+def _safe_isdir(entry):
+    try:
+        return entry.is_dir(follow_symlinks=False)
+    except OSError:
+        return False
+
+
 # ---------------------------------------------------------------- routes
 
 try:
     from server import PromptServer
     from aiohttp import web
+    from PIL import Image
 
     routes = PromptServer.instance.routes
+
+    @routes.get("/imagesavebling/browse")
+    async def _bling_browse(request):
+        raw = request.query.get("path", "").strip()
+        home = os.path.expanduser("~")
+        path = os.path.abspath(raw) if raw else home
+        if not os.path.isdir(path):
+            path, raw = home, ""
+        names = _dir_entries(path)
+        if names is None:
+            path, names = home, (_dir_entries(home) or [])
+        parent = os.path.dirname(path.rstrip(os.sep) or os.sep)
+        if not parent or parent == path:
+            parent = None
+        return web.json_response({
+            "ok": True, "path": path, "parent": parent, "dirs": names,
+            "drives": _list_drives(), "home": home,
+        })
+
+    @routes.get("/imagesavebling/view")
+    async def _bling_view(request):
+        """Serves images saved under a custom save_root. ComfyUI's own /view
+        only serves its own input/output/temp directories, so a save-root
+        override needs its own route to serve gallery previews from.
+
+        Deliberately looked up server-side by (uuid, id) against that node's
+        own history manifest — like /imagesavebling/workflow already does —
+        rather than trusting a root/filename/subfolder path straight off the
+        query string. This node's own writes are the only thing this route
+        can ever read; it's not a general "serve this path" endpoint."""
+        q = request.query
+        uid = q.get("uuid", "")
+        rid = q.get("id", "")
+        want_mask = q.get("mask", "") == "1"
+        preview = q.get("preview") or ""
+        target = None
+        for rec in load(uid):
+            if rec.get("id") == rid:
+                target = rec.get("mask") if want_mask else rec
+                break
+        if not target or not target.get("root"):
+            # Normal (non-custom-root) records are served by core /view
+            # instead — this route only ever handles the save-root case.
+            return web.Response(status=404)
+        path = bling_saver.record_path(target)
+        if not os.path.isfile(path):
+            return web.Response(status=404)
+        if preview:
+            try:
+                im = Image.open(path)
+                im.thumbnail((256, 256))
+                buf = io.BytesIO()
+                qual = int((preview.partition(";")[2]) or "60")
+                mode = "RGBA" if im.mode in ("RGBA", "LA") or "transparency" in im.info else "RGB"
+                im.convert(mode).save(buf, format="WEBP", quality=qual)
+                return web.Response(body=buf.getvalue(), content_type="image/webp")
+            except Exception as e:
+                print(f"[ImageSaveBling] preview render failed: {e}")  # fall through to the full file
+        return web.FileResponse(path)
 
     @routes.get("/imagesavebling/history")
     async def _bling_history_route(request):
@@ -222,11 +319,15 @@ try:
         data = await request.json()
         uid = data.get("uuid", "")
         ids = set(data.get("ids", []))
+        # The frontend sends its current panel settings on every commit, so
+        # format/naming/metadata/mask/watermark/save_root are decided now,
+        # not frozen back when the image was generated — see commit_held().
+        live_cfg = data.get("cfg") if isinstance(data.get("cfg"), dict) else None
         updated, errors = [], []
         for rec in load(uid):
             if rec.get("held") and (not ids or rec.get("id") in ids):
                 try:
-                    new_rec = bling_saver.commit_held(rec)
+                    new_rec = bling_saver.commit_held(rec, live_cfg=live_cfg)
                     update(uid, new_rec)
                     updated.append(new_rec)
                 except Exception as e:

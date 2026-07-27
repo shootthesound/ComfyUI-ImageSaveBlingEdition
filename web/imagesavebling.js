@@ -27,6 +27,7 @@ const DEFAULTS = {
     use_subfolder: false,
     subfolder: "%date%",
     overwrite: false,
+    save_root: "",
     meta_workflow: true,
     meta_prompt: true,
     meta_extra: [],
@@ -52,7 +53,7 @@ const TOKENS = ["%counter%", "%date%", "%time%", "%seed%", "%model%",
 // Which config keys belong to which tab — used by presets (save/exclude by
 // group) and kept in sync with DEFAULTS.
 const GROUPS = {
-    output: ["mode", "format", "quality", "lossless_webp", "png_compress"],
+    output: ["mode", "format", "quality", "lossless_webp", "png_compress", "save_root"],
     naming: ["filename", "prefix", "counter_pad", "use_subfolder", "subfolder",
              "overwrite"],
     metadata: ["meta_workflow", "meta_prompt", "meta_extra", "sidecar_json"],
@@ -178,6 +179,11 @@ const CSS = `
   color:#ffd8d0; }
 .bling-btn.mini { padding:2px 7px; }
 .bling-btn.on { background:rgba(110,85,20,0.6); border-color:#d4af37; color:#ffd24a; }
+.bling-btn.busy { opacity:0.7; pointer-events:none; cursor:default; }
+.bling-spinner { display:inline-block; width:9px; height:9px; margin-right:1px;
+  border:2px solid rgba(255,255,255,0.35); border-top-color:#fff; border-radius:50%;
+  vertical-align:-1px; animation:bling-spin 0.6s linear infinite; }
+@keyframes bling-spin { to { transform:rotate(360deg); } }
 
 .bling-info { flex:0 0 auto; color:#7a9; font-size:9px; white-space:nowrap; }
 .bling-tag { position:absolute; top:2px; left:2px; font-size:9px; font-weight:bold;
@@ -215,6 +221,21 @@ const CSS = `
 .bling-wmprev { width:38px; height:38px; object-fit:contain; border-radius:4px;
   border:1px solid #4a4a56;
   background:repeating-conic-gradient(#2e2e36 0% 25%, #1a1a20 0% 50%) 0 0/12px 12px; }
+
+.bling-browse-ov { position:fixed; inset:0; z-index:10001; background:rgba(5,5,8,0.75);
+  display:flex; align-items:center; justify-content:center; font-family:sans-serif; }
+.bling-browse-box { width:min(520px, 92vw); max-height:80vh; display:flex;
+  flex-direction:column; background:#1c1c22; border:1px solid #444450;
+  border-radius:8px; padding:10px; gap:8px; }
+.bling-browse-path { display:flex; gap:6px; }
+.bling-browse-list { flex:1 1 auto; overflow-y:auto; min-height:160px;
+  border:1px solid #33333c; border-radius:5px; background:#141418; }
+.bling-browse-item { padding:6px 10px; cursor:pointer; font-size:11px; color:#ccc;
+  border-bottom:1px solid #26262e; }
+.bling-browse-item:hover { background:#26262e; }
+.bling-browse-item.up { color:#9cf; }
+.bling-browse-empty { padding:10px; color:#666; font-size:11px; }
+.bling-browse-actions { display:flex; justify-content:flex-end; gap:6px; }
 
 .bling-fields { display:flex; flex-direction:column; gap:4px; }
 .bling-frow { display:flex; gap:4px; }
@@ -257,6 +278,30 @@ function viewUrl(ref, ts, thumb) {
     });
     if (thumb) p.set("preview", "webp;60");
     return api.apiURL("/view?" + p.toString());
+}
+
+// Builds the preview/full-size URL for a gallery record (or its mask
+// companion). Records saved under a custom save_root live outside
+// ComfyUI's own input/output/temp dirs, so core's /view route (confined to
+// those) can't serve them — /imagesavebling/view does instead, by looking
+// the file up server-side from this node's own history manifest via
+// (uuid, id), the same way /imagesavebling/workflow already does. That's
+// deliberate: it means the route can never be pointed at an arbitrary path
+// on disk by whoever's asking, only at a file this node actually recorded.
+function recordUrl(node, rec, opts) {
+    const mask = !!(opts && opts.mask);
+    const thumb = !!(opts && opts.thumb);
+    const ref = mask ? rec.mask : rec;
+    if (ref?.root) {
+        const p = new URLSearchParams({
+            uuid: blingState(node).state.uuid,
+            id: rec.id,
+        });
+        if (mask) p.set("mask", "1");
+        if (thumb) p.set("preview", "webp;60");
+        return api.apiURL("/imagesavebling/view?" + p.toString());
+    }
+    return viewUrl(ref, rec.ts, thumb);
 }
 
 function findWidget(node, name) {
@@ -329,6 +374,24 @@ function pushLastConfig(state) {
 // uuid -> node.id, to give pasted/cloned nodes their own history
 const UUID_REG = new Map();
 
+// Fullscreen review's fit-vs-1:1 double-click choice. It's a shared browser
+// preference (not per-node/per-image) so it survives node lifetime, page
+// reloads and ComfyUI restarts alike — it only changes again when the user
+// double-clicks again.
+const LB_MODE_KEY = "imageSaveBling.lightboxViewMode";
+function loadViewMode() {
+    try { return localStorage.getItem(LB_MODE_KEY) === "actual" ? "actual" : "fit"; }
+    catch (e) { return "fit"; }
+}
+function saveViewMode(mode) {
+    try { localStorage.setItem(LB_MODE_KEY, mode); } catch (e) { /* ignore */ }
+}
+let LB_VIEW_MODE = loadViewMode();
+function setViewMode(mode) {
+    LB_VIEW_MODE = mode;
+    saveViewMode(mode);
+}
+
 // ------------------------------------------------------------------ state
 
 function blingState(node) {
@@ -336,6 +399,11 @@ function blingState(node) {
         node._bling = {
             state: JSON.parse(JSON.stringify(DEFAULTS)),
             entries: [],
+            // Every record id this node has ever accepted, saved or discarded
+            // alike — lets appendRecords tell a genuine new save (Python always
+            // mints a fresh id) from ComfyUI replaying a cached node's old "ui"
+            // payload on an unchanged re-queue (same id, nothing actually ran).
+            seenIds: new Set(),
             sel: -1,
             showMask: false,
             tab: "output",
@@ -372,6 +440,7 @@ function syncFromWidget(node) {
     if (!st.uuid || holderAlive) {
         st.uuid = genId();
         bling.entries = [];
+        bling.seenIds = new Set();
         bling.sel = -1;
     }
     UUID_REG.set(st.uuid, node.id);
@@ -402,6 +471,7 @@ async function fetchHistory(node) {
             bling.lastSig = sig;
             const selId = bling.entries[bling.sel]?.id;
             bling.entries = data.entries;
+            for (const rec of bling.entries) bling.seenIds.add(rec.id);
             const keep = selId ? bling.entries.findIndex((x) => x.id === selId) : -1;
             bling.sel = keep >= 0 ? keep : bling.entries.length - 1;
             renderGallery(node);
@@ -426,8 +496,22 @@ function refetchAll(delay) {
 
 function appendRecords(node, records) {
     const bling = blingState(node);
-    const known = new Set(bling.entries.map((r) => r.id));
-    for (const r of records) if (!known.has(r.id)) bling.entries.push(r);
+    // A real save always mints a fresh id (see uuid4() in bling_saver.py), so
+    // any id we've already seen once — whether it's still showing, already
+    // committed, or was discarded — can only be reappearing because ComfyUI
+    // replayed a cached node's old "ui" payload on an unchanged re-queue, not
+    // because anything new actually saved. Comparing against the full seenIds
+    // history (not just what's currently in bling.entries) is what makes this
+    // catch a previously *discarded* record too, instead of it flashing back
+    // in for a moment before the next manifest sync removes it again.
+    let added = false;
+    for (const r of records) {
+        if (bling.seenIds.has(r.id)) continue;
+        bling.seenIds.add(r.id);
+        bling.entries.push(r);
+        added = true;
+    }
+    if (!added) return;
     bling.sel = bling.entries.length - 1;
     bling.showMask = false;
     bling.lastSig = null; // local append — let the next manifest sync land
@@ -446,9 +530,14 @@ function mergeUpdated(node, updated) {
 async function commitHeld(node, ids) {
     const bling = blingState(node);
     try {
+        // Send the panel's current settings along with the commit — that's
+        // what actually gets used (format, naming, metadata, mask,
+        // watermark, save_root), not whatever was in effect back when the
+        // image was generated and held. Deciding all of that at commit
+        // time, not generation time, is the whole point of holding.
         const r = await api.fetchApi("/imagesavebling/commit", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ uuid: bling.state.uuid, ids: ids || [] }),
+            body: JSON.stringify({ uuid: bling.state.uuid, ids: ids || [], cfg: bling.state }),
         });
         const data = await r.json();
         mergeUpdated(node, data.entries);
@@ -599,6 +688,26 @@ function promptToInput(node, container) {
     container.appendChild(box);
     nameIn.focus();
     nameIn.select();
+}
+
+// Disables `btn` with a spinner + label while `fn` (async) is in flight, and
+// ignores a repeat click that lands before it settles. `idleLabel` is a
+// fixed string to restore once done — pass null for buttons whose label is
+// re-derived from live counts (Save all, Keep starred), in which case a
+// renderGallery pass after `fn` settles re-renders the correct text instead.
+function runBusy(node, btn, busyLabel, idleLabel, fn) {
+    if (btn._busy) return;
+    btn._busy = true;
+    btn.classList.add("busy");
+    btn.innerHTML = "";
+    btn.appendChild(el("span", "bling-spinner"));
+    btn.appendChild(document.createTextNode(" " + busyLabel));
+    Promise.resolve().then(fn).finally(() => {
+        btn._busy = false;
+        btn.classList.remove("busy");
+        if (idleLabel != null) btn.textContent = idleLabel;
+        renderGallery(node);
+    });
 }
 
 // Two-click confirm for destructive buttons: first click arms, second fires.
@@ -752,7 +861,7 @@ function renderGallery(node) {
     if (rec) {
         const showMask = bling.showMask && showRec.mask && !bling.abShow;
         E.mainImg.src = showMask
-            ? viewUrl(showRec.mask, showRec.ts) : viewUrl(showRec, showRec.ts);
+            ? recordUrl(node, showRec, { mask: true }) : recordUrl(node, showRec, {});
         E.badge.textContent = `${pos + 1} / ${vis.length}`
             + (bling.starFilter ? " ★" : "");
         E.fname.textContent = (rec.subfolder ? rec.subfolder + "/" : "") + rec.filename
@@ -785,8 +894,10 @@ function renderGallery(node) {
     const held = bling.entries.filter((r) => r.held);
     const starredHeld = held.filter((r) => r.starred).length;
     E.bulk.style.display = held.length ? "" : "none";
-    if (!E.saveAll._armed) E.saveAll.textContent = `💾 Save all (${held.length})`;
-    if (!E.keepStar._armed) {
+    if (!E.saveAll._armed && !E.saveAll._busy) {
+        E.saveAll.textContent = `💾 Save all (${held.length})`;
+    }
+    if (!E.keepStar._armed && !E.keepStar._busy) {
         E.keepStar.textContent =
             `★ Keep starred held images (${starredHeld}/${held.length})`;
     }
@@ -804,7 +915,7 @@ function renderGallery(node) {
         const t = el("div", "bling-thumb" + (i === bling.sel ? " sel" : "") + (r.held ? " held" : ""));
         const img = el("img");
         img.loading = "lazy";
-        img.src = viewUrl(r, r.ts, true);
+        img.src = recordUrl(node, r, { thumb: true });
         t.appendChild(img);
         if (r.starred) t.appendChild(el("div", "bling-tag", "★"));
         if (pinRec?.id === r.id) t.appendChild(el("div", "bling-tag pin", "A"));
@@ -821,6 +932,122 @@ function renderGallery(node) {
     }
 
     if (bling.lb?.open) renderLightbox(node);
+}
+
+// ------------------------------------------------------------------ save-root folder browser
+//
+// There's no browser API that hands a page a real absolute filesystem path
+// (that's the sandbox working as intended), so a literal native folder
+// dialog can't tell the Python backend where to save. This instead walks
+// the ComfyUI server's own filesystem over /imagesavebling/browse — the
+// same machine this node actually writes files on — which gets you the
+// same "click through folders and pick one" experience.
+
+async function browseDir(path) {
+    const p = new URLSearchParams();
+    if (path) p.set("path", path);
+    const r = await api.fetchApi("/imagesavebling/browse?" + p.toString());
+    return r.json();
+}
+
+function openFolderBrowser(node, startPath, onPick) {
+    const ov = el("div", "bling-browse-ov");
+    const box = el("div", "bling-browse-box");
+    box.addEventListener("pointerdown", (e) => e.stopPropagation());
+    ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(); });
+
+    const hint = el("div", "bling-note",
+        "Browsing the ComfyUI server's own filesystem — a page can't be handed "
+        + "a real folder path by the browser, so this is the closest stand-in "
+        + "for a native picker. Navigate to a folder, then Select it.");
+
+    const pathRow = el("div", "bling-browse-path");
+    const pathIn = el("input", "bling-in grow");
+    pathIn.type = "text";
+    pathIn.addEventListener("pointerdown", (e) => e.stopPropagation());
+    pathIn.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") { e.preventDefault(); load(pathIn.value.trim()); }
+    });
+    const goBtn = el("div", "bling-btn mini", "Go");
+    goBtn.addEventListener("click", () => load(pathIn.value.trim()));
+    pathRow.appendChild(pathIn);
+    pathRow.appendChild(goBtn);
+
+    const list = el("div", "bling-browse-list");
+
+    const actions = el("div", "bling-browse-actions");
+    const cancelBtn = el("div", "bling-btn mini", "Cancel");
+    const selectBtn = el("div", "bling-btn mini save", "Select this folder");
+    cancelBtn.addEventListener("click", () => close());
+    selectBtn.addEventListener("click", () => { onPick(current); close(); });
+    actions.appendChild(cancelBtn);
+    actions.appendChild(selectBtn);
+
+    box.appendChild(hint);
+    box.appendChild(pathRow);
+    box.appendChild(list);
+    box.appendChild(actions);
+    ov.appendChild(box);
+
+    let current = startPath || "";
+
+    // A capture-phase listener, same pattern as the fullscreen lightbox's
+    // own keydown handling: without this, keys like Delete/Backspace or the
+    // arrows would bleed through this overlay to ComfyUI's canvas
+    // underneath (deleting the node, panning it, etc.) whenever focus isn't
+    // sitting inside the path input — the input already guards its own
+    // keydowns, but nothing was guarding the rest of the modal.
+    function onKeyDown(e) {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
+        const t = e.target;
+        if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) return;
+        e.stopPropagation();
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+
+    function close() {
+        window.removeEventListener("keydown", onKeyDown, true);
+        ov.remove();
+    }
+
+    async function load(path) {
+        let data = null;
+        try { data = await browseDir(path); } catch (e) { /* ignore */ }
+        if (!data || !data.ok) {
+            list.innerHTML = "";
+            list.appendChild(el("div", "bling-browse-empty",
+                "Couldn't list that folder — falling back to home."));
+            if (path) load("");
+            return;
+        }
+        current = data.path;
+        pathIn.value = current;
+        list.innerHTML = "";
+        if (data.parent) {
+            const up = el("div", "bling-browse-item up", "⬆  .. (up one level)");
+            up.addEventListener("click", () => load(data.parent));
+            list.appendChild(up);
+        }
+        for (const d of data.drives || []) {
+            if (d === current) continue;
+            const it = el("div", "bling-browse-item", "💽 " + d);
+            it.addEventListener("click", () => load(d));
+            list.appendChild(it);
+        }
+        for (const name of data.dirs || []) {
+            const it = el("div", "bling-browse-item", "📁 " + name);
+            it.addEventListener("click", () => load(
+                current.replace(/[\\/]+$/, "") + "/" + name));
+            list.appendChild(it);
+        }
+        if (!(data.dirs || []).length && !data.parent && !(data.drives || []).length) {
+            list.appendChild(el("div", "bling-browse-empty", "No subfolders here."));
+        }
+    }
+
+    document.body.appendChild(ov);
+    load(current);
 }
 
 // ------------------------------------------------------------------ settings panel
@@ -862,6 +1089,27 @@ function renderPanel(node) {
             }
             if (st.format === "webp" && st.lossless_webp) q.classList.add("bling-dim");
             E.panel.appendChild(r);
+        }
+
+        const rootIn = textInput(st.save_root, "(ComfyUI output folder)",
+            (v) => set({ save_root: v.trim() }, false), "grow");
+        rootIn.title = "Absolute folder to save into instead of ComfyUI's "
+            + "output folder. Leave blank for the normal behavior — "
+            + "subfolder patterns still apply underneath whichever root is in effect.";
+        const browseBtn = el("div", "bling-btn mini", "Browse…");
+        browseBtn.addEventListener("click", () => {
+            openFolderBrowser(node, st.save_root || "",
+                (picked) => set({ save_root: picked }));
+        });
+        const clearRootBtn = el("div", "bling-x", "×");
+        clearRootBtn.title = "Reset to ComfyUI's output folder";
+        clearRootBtn.addEventListener("click", () => set({ save_root: "" }));
+        E.panel.appendChild(row("Save root", rootIn, browseBtn, clearRootBtn));
+        if (st.save_root) {
+            E.panel.appendChild(el("div", "bling-note",
+                "Saving outside ComfyUI's output folder. This node serves "
+                + "the gallery previews for these files itself, and they "
+                + "won't show up in ComfyUI's own output browser."));
         }
     }
 
@@ -1285,7 +1533,10 @@ function buildLightbox(node) {
     L.save.title = "Save this held image (Enter)";
     L.save.addEventListener("click", () => {
         const rec = bling.entries[bling.sel];
-        if (rec?.held) commitHeld(node, [rec.id]);
+        if (rec?.held) {
+            runBusy(node, L.save, "Saving…", "💾 Save this one",
+                () => commitHeld(node, [rec.id]));
+        }
     });
     L.discard = el("div", "bling-btn danger mini", "✕ Discard");
     L.discard.title = "Discard this held image (Delete)";
@@ -1326,6 +1577,13 @@ function buildLightbox(node) {
     const lb = () => bling.lb;
     L.root.addEventListener("wheel", (e) => {
         e.preventDefault();
+        // A wheel tick that lands before the image has actually decoded (a
+        // trailing scroll/trackpad-momentum event right as you open the
+        // lightbox is the common trigger) has no real fit scale to zoom
+        // from yet — falling back to a bare `1` and locking that skewed
+        // result into lb.scale is what caused fullscreen to sometimes open
+        // "a bit" off from fit or 1:1 instead of cleanly landing on either.
+        if (!L.img.naturalWidth) return;
         const s = lb().scale ?? lb().fitScale ?? 1;
         const ns = Math.min(12, Math.max((lb().fitScale || 0.05) * 0.2,
             s * Math.exp(-e.deltaY * 0.0015)));
@@ -1358,12 +1616,14 @@ function buildLightbox(node) {
         const s = bling.lb.scale ?? fit;
         if (Math.abs(s - fit) > 0.001) {
             bling.lb.scale = null; // back to fit
+            setViewMode("fit");
         } else {
             const cx = e.clientX - window.innerWidth / 2;
             const cy = e.clientY - window.innerHeight / 2;
             bling.lb.tx = cx - (cx - bling.lb.tx) * (1 / s);
             bling.lb.ty = cy - (cy - bling.lb.ty) * (1 / s);
             bling.lb.scale = 1;
+            setViewMode("actual");
         }
         applyLightboxTransform(node);
     });
@@ -1372,6 +1632,14 @@ function buildLightbox(node) {
     });
     L.img.addEventListener("load", () => {
         if (bling.lb?.open) applyLightboxTransform(node);
+        L.img.style.visibility = ""; // reveal now that it's centered for its own size
+    });
+    // A failed load (e.g. the file was discarded server-side a moment
+    // before the browser got to it) shouldn't leave a stale transform
+    // computed from whatever was showing before sitting on a broken image.
+    L.img.addEventListener("error", () => {
+        if (bling.lb?.open) applyLightboxTransform(node);
+        L.img.style.visibility = "";
     });
     return L;
 }
@@ -1383,7 +1651,12 @@ function applyLightboxTransform(node) {
     if (!L || !lb?.open || !L.img.naturalWidth) return;
     const nw = L.img.naturalWidth, nh = L.img.naturalHeight;
     lb.fitScale = Math.min(window.innerWidth / nw, window.innerHeight / nh);
-    if (lb.scale == null) { lb.scale = lb.fitScale; lb.tx = 0; lb.ty = 0; }
+    if (lb.scale == null) {
+        // A fresh image (open, arrow-step, mask toggle) picks up whichever
+        // mode the user last double-clicked to, not always "fit".
+        lb.scale = LB_VIEW_MODE === "actual" ? 1 : lb.fitScale;
+        lb.tx = 0; lb.ty = 0;
+    }
     const s = lb.scale;
     L.img.style.transform =
         `translate(${lb.tx - (nw * s) / 2}px, ${lb.ty - (nh * s) / 2}px) scale(${s})`;
@@ -1396,13 +1669,40 @@ function renderLightbox(node) {
     if (!L || !bling.lb?.open) return;
     const rec = bling.entries[bling.sel];
     if (!rec) { closeLightbox(node); return; }
+    if (bling.lb.recId !== rec.id) {
+        // The displayed image changed by some path other than step()  —
+        // discard, commit, star-driven resync, a filmstrip click, all move
+        // `sel` without going through the arrow-key/button handler. Without
+        // this, whatever raw scale/pan the previous image was left at
+        // (including a mid-drag scroll-zoom, not just fit vs 1:1) leaks
+        // onto the new image instead of re-applying the persisted mode.
+        // (applyLightboxTransform already resets tx/ty whenever scale is
+        // null, so nulling scale alone is enough here.)
+        bling.lb.scale = null;
+        bling.lb.recId = rec.id;
+    }
     const pinRec = bling.pinId ? bling.entries.find((r) => r.id === bling.pinId) : null;
     const comparing = pinRec && pinRec.id !== rec.id;
     const showRec = (bling.lb.showA && comparing) ? pinRec : rec;
     const showMask = bling.showMask && showRec.mask && !bling.lb.showA;
-    const url = showMask ? viewUrl(showRec.mask, showRec.ts)
-                         : viewUrl(showRec, showRec.ts);
-    if (L.img.getAttribute("src") !== url) L.img.src = url;
+    const url = showMask ? recordUrl(node, showRec, { mask: true })
+                         : recordUrl(node, showRec, {});
+    // If the image is actually changing, naturalWidth briefly still
+    // reflects whatever was showing before (browsers don't repaint
+    // instantly) — computing the transform from that stale size is what
+    // caused the occasional wrong-zoom flicker. Let the "load" handler
+    // (fired once the new image is actually decoded) do it instead.
+    const changingImage = L.img.getAttribute("src") !== url;
+    if (changingImage) {
+        // Stay invisible until the "load" handler re-centers the transform
+        // for this image's own dimensions — otherwise the browser paints at
+        // least one frame of the new (possibly differently-shaped) image
+        // still positioned by the previous image's translate, which is the
+        // "pops in off to the side, then jumps to center" glitch on an
+        // aspect-ratio change between images.
+        L.img.style.visibility = "hidden";
+        L.img.src = url;
+    }
     L.fname.textContent =
         (bling.lb.showA && comparing ? "A (pinned)  " : "")
         + (showRec.subfolder ? showRec.subfolder + "/" : "") + showRec.filename
@@ -1420,7 +1720,7 @@ function renderLightbox(node) {
     L.mask.style.display = rec.mask ? "" : "none";
     L.save.style.display = rec.held ? "" : "none";
     L.discard.style.display = rec.held ? "" : "none";
-    applyLightboxTransform(node);
+    if (!changingImage) applyLightboxTransform(node);
 }
 
 function openLightbox(node) {
@@ -1439,7 +1739,7 @@ function openLightbox(node) {
         else if (e.key === "ArrowLeft") step(node, -1);
         else if (e.key === "ArrowRight") step(node, +1);
         else if (e.key === "s" || e.key === "S") { if (rec) setStar(node, rec, !rec.starred); }
-        else if (e.key === "Enter") { if (rec?.held) commitHeld(node, [rec.id]); }
+        else if (e.key === "Enter") { if (rec?.held) L.save.click(); }
         else if (e.key === "Delete" || e.key === "Backspace") {
             if (rec?.held) discardHeld(node, rec);
         }
@@ -1507,7 +1807,10 @@ function buildUI(node) {
     const saveBtn = el("div", "bling-btn save", "💾 Save this one");
     saveBtn.addEventListener("click", () => {
         const rec = bling.entries[bling.sel];
-        if (rec?.held) commitHeld(node, [rec.id]);
+        if (rec?.held) {
+            runBusy(node, saveBtn, "Saving…", "💾 Save this one",
+                () => commitHeld(node, [rec.id]));
+        }
     });
     const discardBtn = el("div", "bling-btn danger", "✕ Discard");
     discardBtn.addEventListener("click", () => {
@@ -1551,7 +1854,7 @@ function buildUI(node) {
     openBtn.title = "Open full size in a new tab";
     openBtn.addEventListener("click", () => {
         const rec = bling.entries[bling.sel];
-        if (rec) window.open(viewUrl(rec, rec.ts), "_blank");
+        if (rec) window.open(recordUrl(node, rec, {}), "_blank");
     });
     E.inpBtn = el("div", "bling-ico", "📥");
     E.inpBtn.title = "Save a copy to ComfyUI's input folder (for Load Image) — "
@@ -1630,10 +1933,12 @@ function buildUI(node) {
     E.bulk = el("div", "bling-ctl");
     E.bulk.style.display = "none";
     E.saveAll = el("div", "bling-btn save mini", "💾 Save all");
-    E.saveAll.addEventListener("click", () => commitHeld(node, []));
+    E.saveAll.addEventListener("click", () =>
+        runBusy(node, E.saveAll, "Saving…", null, () => commitHeld(node, [])));
     E.keepStar = el("div", "bling-btn save mini", "★ Keep starred");
     E.keepStar.title = "Save every starred held image, discard the held rest";
-    armable(E.keepStar, "Keep ★ held, drop rest?", () => keepStarred(node));
+    armable(E.keepStar, "Keep ★ held, drop rest?", () =>
+        runBusy(node, E.keepStar, "Saving…", null, () => keepStarred(node)));
     E.discardAll = el("div", "bling-btn mini", "✕ Discard all");
     E.discardAll.title = "Discard every held image";
     armable(E.discardAll, "Discard all held?", () => discardMany(node, [], true));
@@ -1698,7 +2003,7 @@ function step(node, d) {
     const next = pos < 0 ? 0 : ((pos + d) % vis.length + vis.length) % vis.length;
     bling.sel = vis[next];
     bling.showMask = false;
-    if (bling.lb?.open) bling.lb.scale = null; // re-fit the lightbox per image
+    if (bling.lb?.open) bling.lb.scale = null; // re-apply the persisted zoom mode per image
     renderGallery(node);
 }
 
